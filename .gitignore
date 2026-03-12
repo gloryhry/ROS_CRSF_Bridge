@@ -1,0 +1,32 @@
+# AI / Agent tools
+.ace-tool/
+.claude/
+.spec-workflow/
+
+# Editor configs (local)
+.vscode/
+
+# Build artifacts (catkin)
+build/
+devel/
+
+# CMake / build system
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+install_manifest.txt
+compile_commands.json
+
+# Binaries / objects
+*.o
+*.a
+*.so
+*.so.*
+*.dylib
+*.exe
+
+# Logs
+*.log
+
+# Claude Code guidance file (repo-local)
+CLAUDE.md

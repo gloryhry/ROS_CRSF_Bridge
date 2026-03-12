@@ -1,0 +1,17 @@
+<launch>
+  <node name="crsf_control" pkg="crsf_control" type="crsf_control_node" output="screen">
+    <!-- Joy message topic name -->
+    <param name="joy_topic"     type="string" value="/joy" />
+
+    <!-- Serial port configuration -->
+    <param name="serial_port"   type="string" value="/dev/ttyUSB0" />
+    <param name="serial_baud"   type="int"    value="420000" />
+
+    <!-- CRSF packet refresh rate (Hz) -->
+    <param name="crsf_rate"     type="int"    value="50" />
+
+    <!-- Safety thresholds -->
+    <param name="min_frequency" type="double" value="10.0" />
+    <param name="timeout"       type="double" value="0.5" />
+  </node>
+</launch>
