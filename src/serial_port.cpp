@@ -5,6 +5,7 @@
 #include <errno.h>
 #include <string.h>
 #include <sys/ioctl.h>
+#include <poll.h>
 
 // Use asm/termbits.h for termios2 + BOTHER (custom baud rate)
 // Do NOT include <termios.h> — it conflicts with asm/termbits.h
@@ -78,6 +79,53 @@ bool SerialPort::write(const uint8_t* data, size_t len)
         total_written += static_cast<size_t>(written);
     }
     return true;
+}
+
+ssize_t SerialPort::read(uint8_t* buf, size_t max_len)
+{
+    if (fd_ < 0 || buf == nullptr || max_len == 0) {
+        return -1;
+    }
+
+    ssize_t n = ::read(fd_, buf, max_len);
+    if (n < 0) {
+        if (errno == EINTR) {
+            return 0;
+        }
+        if (errno == EAGAIN || errno == EWOULDBLOCK) {
+            return 0;
+        }
+        return -1;
+    }
+
+    return n;
+}
+
+bool SerialPort::waitReadable(int timeout_ms)
+{
+    if (fd_ < 0) {
+        return false;
+    }
+
+    struct pollfd pfd;
+    pfd.fd = fd_;
+    pfd.events = POLLIN;
+    pfd.revents = 0;
+
+    int ret;
+    do {
+        ret = ::poll(&pfd, 1, timeout_ms);
+    } while (ret < 0 && errno == EINTR);
+
+    if (ret <= 0) {
+        return false;
+    }
+
+    if (pfd.revents & (POLLERR | POLLHUP | POLLNVAL)) {
+        return false;
+    }
+
+    return (pfd.revents & POLLIN) != 0;
 }
 
 bool SerialPort::configurePort()

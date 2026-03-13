@@ -2,14 +2,26 @@
 #define CRSF_CONTROL_CRSF_NODE_H
 
 #include <ros/ros.h>
+
 #include <sensor_msgs/Joy.h>
+#include <sensor_msgs/BatteryState.h>
+#include <sensor_msgs/NavSatFix.h>
+#include <sensor_msgs/Imu.h>
+
+#include <std_msgs/String.h>
+
+#include <geometry_msgs/Quaternion.h>
 
 #include <atomic>
 #include <mutex>
 #include <thread>
 #include <cstdint>
 
+#include "crsf_control/CrsfFrame.h"
+#include "crsf_control/CrsfLinkStatistics.h"
+#include "crsf_control/crsf_frame_stream_parser.h"
 #include "crsf_control/crsf_protocol.h"
+#include "crsf_control/crsf_telemetry_decoder.h"
 #include "crsf_control/serial_port.h"
 
 namespace crsf_control {
@@ -28,11 +40,19 @@ public:
 private:
     void joyCallback(const sensor_msgs::Joy::ConstPtr& msg);
     void senderLoop();
+    void receiverLoop();
 
     // ROS
     ros::NodeHandle& nh_;
     ros::NodeHandle& pnh_;
     ros::Subscriber joy_sub_;
+
+    ros::Publisher telemetry_raw_pub_;
+    ros::Publisher battery_pub_;
+    ros::Publisher gps_pub_;
+    ros::Publisher imu_pub_;
+    ros::Publisher flight_mode_pub_;
+    ros::Publisher link_stats_pub_;
 
     // Parameters
     std::string joy_topic_;
@@ -57,8 +77,9 @@ private:
     std::atomic<bool> output_enabled_;
     std::atomic<bool> frequency_warned_;
 
-    // Sender thread
+    // Sender/receiver threads
     std::thread sender_thread_;
+    std::thread receiver_thread_;
     std::atomic<bool> running_;
 
     // Statistics for frequency monitoring

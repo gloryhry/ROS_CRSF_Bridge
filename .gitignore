@@ -2,6 +2,7 @@
 .ace-tool/
 .claude/
 .spec-workflow/
+.serena/
 
 # Editor configs (local)
 .vscode/

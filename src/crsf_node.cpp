@@ -2,6 +2,7 @@
 
 #include <chrono>
 #include <cstring>
+#include <cmath>
 
 namespace crsf_control {
 
@@ -75,10 +76,20 @@ bool CrsfNode::init()
     joy_sub_ = nh_.subscribe(joy_topic_, 1, &CrsfNode::joyCallback, this);
     ROS_INFO("Subscribed to Joy topic: %s", joy_topic_.c_str());
 
-    // Start sender thread
+    // Telemetry publishers (private namespace: ~telemetry/...)
+    telemetry_raw_pub_ = pnh_.advertise<crsf_control::CrsfFrame>("telemetry/raw", 10);
+    battery_pub_ = pnh_.advertise<sensor_msgs::BatteryState>("telemetry/battery", 10);
+    gps_pub_ = pnh_.advertise<sensor_msgs::NavSatFix>("telemetry/gps", 10);
+    imu_pub_ = pnh_.advertise<sensor_msgs::Imu>("telemetry/imu", 10);
+    flight_mode_pub_ = pnh_.advertise<std_msgs::String>("telemetry/flight_mode", 10);
+    link_stats_pub_ = pnh_.advertise<crsf_control::CrsfLinkStatistics>("telemetry/link_statistics", 10);
+
+    // Start sender/receiver threads
     running_ = true;
     sender_thread_ = std::thread(&CrsfNode::senderLoop, this);
+    receiver_thread_ = std::thread(&CrsfNode::receiverLoop, this);
     ROS_INFO("CRSF sender thread started at %d Hz", crsf_rate_);
+    ROS_INFO("CRSF receiver thread started");
 
     ROS_INFO("crsf_control node initialized successfully");
     return true;
@@ -93,6 +104,10 @@ void CrsfNode::shutdown()
     }
 
     ROS_INFO("Shutting down crsf_control node...");
+
+    if (receiver_thread_.joinable()) {
+        receiver_thread_.join();
+    }
 
     if (sender_thread_.joinable()) {
         sender_thread_.join();
@@ -157,6 +172,23 @@ void CrsfNode::joyCallback(const sensor_msgs::Joy::ConstPtr& msg)
             ROS_INFO("Joy message frequency recovered to %.1f Hz", joy_frequency_);
         }
     }
+}
+
+static geometry_msgs::Quaternion quatFromRollPitchYaw(double roll_rad, double pitch_rad, double yaw_rad)
+{
+    const double cy = std::cos(yaw_rad * 0.5);
+    const double sy = std::sin(yaw_rad * 0.5);
+    const double cp = std::cos(pitch_rad * 0.5);
+    const double sp = std::sin(pitch_rad * 0.5);
+    const double cr = std::cos(roll_rad * 0.5);
+    const double sr = std::sin(roll_rad * 0.5);
+
+    geometry_msgs::Quaternion q;
+    q.w = cr * cp * cy + sr * sp * sy;
+    q.x = sr * cp * cy - cr * sp * sy;
+    q.y = cr * sp * cy + sr * cp * sy;
+    q.z = cr * cp * sy - sr * sp * cy;
+    return q;
 }
 
 void CrsfNode::senderLoop()
@@ -245,6 +277,124 @@ void CrsfNode::senderLoop()
     }
 
     ROS_INFO("Sender thread exiting. Total frames: %lu, errors: %lu", frame_count, error_count);
+}
+
+void CrsfNode::receiverLoop()
+{
+    FrameStreamParser parser;
+    uint8_t rx_buf[256];
+    std::vector<CrsfRxFrame> frames;
+
+    uint64_t bytes_total = 0;
+    uint64_t frames_total = 0;
+
+    ROS_INFO("Receiver thread running.");
+
+    while (running_.load() && ros::ok()) {
+        if (!(serial_ && serial_->isOpen())) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(50));
+            continue;
+        }
+
+        // Wait readable with timeout to allow clean shutdown.
+        if (!serial_->waitReadable(100)) {
+            continue;
+        }
+
+        ssize_t n = serial_->read(rx_buf, sizeof(rx_buf));
+        if (n <= 0) {
+            continue;
+        }
+
+        bytes_total += static_cast<uint64_t>(n);
+
+        frames.clear();
+        parser.pushBytes(rx_buf, static_cast<size_t>(n), &frames);
+
+        for (const auto& f : frames) {
+            frames_total += 1;
+
+            // Raw publish
+            if (telemetry_raw_pub_) {
+                crsf_control::CrsfFrame msg;
+                msg.header.stamp = ros::Time::now();
+                msg.device_address = f.address;
+                msg.frame_length = f.length;
+                msg.type = f.type;
+                msg.payload = f.payload;
+                msg.crc = f.crc;
+                telemetry_raw_pub_.publish(msg);
+            }
+
+            // Decoded publish
+            if (f.type == TelemetryDecoder::CRSF_FRAMETYPE_GPS) {
+                TelemetryDecoder::GpsData gps;
+                if (TelemetryDecoder::decodeGps(f.payload.data(), f.payload.size(), &gps)) {
+                    sensor_msgs::NavSatFix nav;
+                    nav.header.stamp = ros::Time::now();
+                    nav.latitude = gps.latitude_deg;
+                    nav.longitude = gps.longitude_deg;
+                    nav.altitude = gps.altitude_m;
+                    gps_pub_.publish(nav);
+                }
+            } else if (f.type == TelemetryDecoder::CRSF_FRAMETYPE_BATTERY_SENSOR) {
+                TelemetryDecoder::BatteryData bat;
+                if (TelemetryDecoder::decodeBatterySensor(f.payload.data(), f.payload.size(), &bat)) {
+                    sensor_msgs::BatteryState bs;
+                    bs.header.stamp = ros::Time::now();
+                    bs.voltage = static_cast<float>(bat.voltage_v);
+                    bs.current = static_cast<float>(bat.current_a);
+                    bs.percentage = static_cast<float>(bat.remaining_percent) / 100.0f;
+                    battery_pub_.publish(bs);
+                }
+            } else if (f.type == TelemetryDecoder::CRSF_FRAMETYPE_LINK_STATISTICS) {
+                TelemetryDecoder::LinkStatisticsData ls;
+                if (TelemetryDecoder::decodeLinkStatistics(f.payload.data(), f.payload.size(), &ls)) {
+                    crsf_control::CrsfLinkStatistics out;
+                    out.header.stamp = ros::Time::now();
+                    out.uplink_rssi_1 = ls.uplink_rssi_1;
+                    out.uplink_rssi_2 = ls.uplink_rssi_2;
+                    out.uplink_link_quality = ls.uplink_link_quality;
+                    out.uplink_snr = ls.uplink_snr;
+                    out.active_antenna = ls.active_antenna;
+                    out.rf_mode = ls.rf_mode;
+                    out.uplink_tx_power = ls.uplink_tx_power;
+                    out.downlink_rssi = ls.downlink_rssi;
+                    out.downlink_link_quality = ls.downlink_link_quality;
+                    out.downlink_snr = ls.downlink_snr;
+                    link_stats_pub_.publish(out);
+                }
+            } else if (f.type == TelemetryDecoder::CRSF_FRAMETYPE_ATTITUDE) {
+                TelemetryDecoder::AttitudeData att;
+                if (TelemetryDecoder::decodeAttitude(f.payload.data(), f.payload.size(), &att)) {
+                    sensor_msgs::Imu imu;
+                    imu.header.stamp = ros::Time::now();
+                    imu.orientation = quatFromRollPitchYaw(att.roll_rad, att.pitch_rad, att.yaw_rad);
+
+                    // Unknown covariances
+                    imu.orientation_covariance[0] = -1.0;
+                    imu.angular_velocity_covariance[0] = -1.0;
+                    imu.linear_acceleration_covariance[0] = -1.0;
+
+                    imu_pub_.publish(imu);
+                }
+            } else if (f.type == TelemetryDecoder::CRSF_FRAMETYPE_FLIGHT_MODE) {
+                TelemetryDecoder::FlightModeData fm;
+                if (TelemetryDecoder::decodeFlightMode(f.payload.data(), f.payload.size(), &fm)) {
+                    std_msgs::String s;
+                    s.data = fm.mode;
+                    flight_mode_pub_.publish(s);
+                }
+            }
+        }
+
+        if (frames_total % 500 == 0 && frames_total > 0) {
+            ROS_DEBUG("Telemetry RX: bytes=%lu frames=%lu buffered=%lu", bytes_total, frames_total,
+                      static_cast<unsigned long>(parser.bufferedSize()));
+        }
+    }
+
+    ROS_INFO("Receiver thread exiting. bytes=%lu frames=%lu", bytes_total, frames_total);
 }
 
 }  // namespace crsf_control
