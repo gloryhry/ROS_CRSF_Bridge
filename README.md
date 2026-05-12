@@ -1,5 +1,7 @@
 # ROS_CRSF_Bridge
 
+PX4固件支持： [https://docs.px4.io/main/zh/telemetry/crsf_telemetry](https://docs.px4.io/main/zh/telemetry/crsf_telemetry)
+
 ROS1 节点：订阅 `sensor_msgs/Joy`，将 `axes[]` 映射为 **CRSF** (TBS Crossfire) 的 **RC_CHANNELS_PACKED (0x16)** 帧，通过串口发送至飞控。
 
 同时支持 **CRSF 遥测回传**：从同一串口接收 CRSF 遥测帧并发布为 ROS topics（Hybrid：**原始帧 + 解析后的标准消息**）。
